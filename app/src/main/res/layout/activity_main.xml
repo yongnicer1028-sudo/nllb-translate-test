@@ -1,0 +1,124 @@
+<?xml version="1.0" encoding="utf-8"?>
+<ScrollView xmlns:android="http://schemas.android.com/apk/res/android"
+    android:layout_width="match_parent"
+    android:layout_height="match_parent"
+    android:fillViewport="true">
+
+    <LinearLayout
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:orientation="vertical"
+        android:padding="20dp">
+
+        <TextView
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:text="일본어 → 한국어 번역 테스트 (1단계)"
+            android:textColor="@color/text_dark"
+            android:textSize="18sp"
+            android:textStyle="bold" />
+
+        <TextView
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="4dp"
+            android:text="이 화면은 음성인식 없이, 번역 엔진(NLLB)만 따로 테스트하는 화면이에요."
+            android:textColor="#666666"
+            android:textSize="13sp" />
+
+        <!-- 모델 다운로드 영역 -->
+        <TextView
+            android:id="@+id/textModelStatus"
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="20dp"
+            android:text="모델 상태: 확인 전"
+            android:textColor="@color/text_dark"
+            android:textSize="14sp" />
+
+        <ProgressBar
+            android:id="@+id/progressDownload"
+            style="?android:attr/progressBarStyleHorizontal"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="8dp"
+            android:max="100"
+            android:progress="0"
+            android:visibility="gone" />
+
+        <Button
+            android:id="@+id/btnDownloadModel"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="8dp"
+            android:text="번역 모델 다운로드 (약 1GB, 와이파이 권장)" />
+
+        <View
+            android:layout_width="match_parent"
+            android:layout_height="1dp"
+            android:layout_marginTop="20dp"
+            android:layout_marginBottom="20dp"
+            android:background="#DDDDDD" />
+
+        <!-- 입력/번역 영역 -->
+        <TextView
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:text="일본어 문장 입력"
+            android:textColor="@color/text_dark"
+            android:textSize="14sp"
+            android:textStyle="bold" />
+
+        <EditText
+            android:id="@+id/editInput"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="6dp"
+            android:background="#FFFFFF"
+            android:gravity="top"
+            android:hint="여기에 일본어 문장을 입력하세요"
+            android:inputType="textMultiLine"
+            android:minLines="3"
+            android:padding="12dp"
+            android:text="いや、別にそういうつもりじゃなかったんだけど。" />
+
+        <Button
+            android:id="@+id/btnTranslate"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="10dp"
+            android:enabled="false"
+            android:text="번역하기" />
+
+        <TextView
+            android:id="@+id/textTiming"
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="10dp"
+            android:text=""
+            android:textColor="#888888"
+            android:textSize="12sp" />
+
+        <TextView
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="10dp"
+            android:text="한국어 번역 결과"
+            android:textColor="@color/text_dark"
+            android:textSize="14sp"
+            android:textStyle="bold" />
+
+        <TextView
+            android:id="@+id/textOutput"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="6dp"
+            android:background="#FFFFFF"
+            android:minHeight="80dp"
+            android:padding="12dp"
+            android:text=""
+            android:textColor="@color/text_dark"
+            android:textSize="16sp" />
+
+    </LinearLayout>
+</ScrollView>
