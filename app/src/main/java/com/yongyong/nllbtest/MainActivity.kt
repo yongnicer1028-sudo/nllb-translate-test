@@ -109,11 +109,14 @@ object ModelManager {
             // 디코더: 캐시 없이 통째로 계산하는 "decoder_model.onnx" 형태를 최우선으로 찾고,
             // 없으면 "decoder_model_merged"(캐시 지원 버전)로 대체 — 이 경우는 지금 버전 코드가
             // 아직 처리 못 하니 나중에 에러 메시지로 알려줘요.
-            val plainDecoder = names.firstOrNull {
-                it.startsWith("onnx/") && it.contains("decoder_model") &&
-                    !it.contains("merged") && !it.contains("with_past") && it.endsWith(".onnx")
-            }
-            val mergedDecoder = names
+                        val plainDecoder = names
+                .filter {
+                    it.startsWith("onnx/") && it.contains("decoder_model") &&
+                        !it.contains("merged") && !it.contains("with_past") && it.endsWith(".onnx")
+                }
+                .sortedBy { name -> if (name.contains("quantized") || name.contains("int8")) 0 else 1 }
+                .firstOrNull()
+val mergedDecoder = names
                 .filter { it.startsWith("onnx/") && it.contains("decoder_model_merged") && it.endsWith(".onnx") }
                 .sortedBy { name -> if (name.contains("quantized") || name.contains("int8")) 0 else 1 }
                 .firstOrNull()
