@@ -57,6 +57,15 @@ object ModelManager {
     private const val API_URL = "https://huggingface.co/api/models/$REPO"
     private const val FILE_BASE_URL = "https://huggingface.co/$REPO/resolve/main/"
 
+    // 어떤 파일 "종류"를 골라서 받았는지 나타내는 버전 번호예요. 나중에 파일
+    // 선택 로직(resolveFileNames)을 고치면 이 숫자를 1씩 올려주세요 — 그래야
+    // 예전 로직으로 잘못 받아둔 파일(예: 용량이 훨씬 큰 fp32 디코더)이 기기에
+    // 남아있어도, 앱이 그걸 재사용하지 않고 새 로직으로 다시 받아요.
+    // (이 값이 없으면: 디코더 선택 로직을 고쳐도, 이미 큰 파일을 받아버린
+    //  태블릿에서는 새 코드가 적용 안 되고 계속 옛날의 큰 파일을 불러오려다
+    //  메모리 부족으로 앱이 꺼지는 걸 반복하게 돼요.)
+    private const val MODEL_SCHEMA_VERSION = 2
+
     private val client = OkHttpClient.Builder()
         .connectTimeout(30, TimeUnit.SECONDS)
         .readTimeout(120, TimeUnit.SECONDS)
@@ -75,6 +84,16 @@ object ModelManager {
      */
     fun isDownloaded(context: android.content.Context): ModelPaths? {
         val dir = modelsDir(context)
+        val versionFile = File(dir, "schema_version.txt")
+        val savedVersion = if (versionFile.exists()) {
+            versionFile.readText().trim().toIntOrNull()
+        } else null
+        if (savedVersion != MODEL_SCHEMA_VERSION) {
+            // 옷날 로직으로 받아둔 파일일 수 있어요 (예: 메모리 부족을 일으키는
+            // 큰 디코더). 안전하게 새로 받도록 "없음" 취급해요.
+            return null
+        }
+
         val enc = File(dir, "encoder.onnx")
         val dec = File(dir, "decoder.onnx")
         val tok = File(dir, "tokenizer.json")
@@ -167,6 +186,9 @@ val mergedDecoder = names
         }
 
         onProgress(100)
+        // 새로 다 받았으니, 이번에 어떤 버전 로직으로 받았는지 기록해둡요.
+        // (다음에 앱을 켰을 때 isDownloaded()가 이 값을 보고 재사용 여부를 판단해요)
+        File(dir, "schema_version.txt").writeText(MODEL_SCHEMA_VERSION.toString())
         return ModelPaths(
             targets[0].second.absolutePath,
             targets[1].second.absolutePath,
