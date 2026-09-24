@@ -89,7 +89,7 @@ object ModelManager {
             versionFile.readText().trim().toIntOrNull()
         } else null
         if (savedVersion != MODEL_SCHEMA_VERSION) {
-            // 옷날 로직으로 받아둔 파일일 수 있어요 (예: 메모리 부족을 일으키는
+            // 옛날 로직으로 받아둔 파일일 수 있어요 (예: 메모리 부족을 일으키는            
             // 큰 디코더). 안전하게 새로 받도록 "없음" 취급해요.
             return null
         }
