@@ -15,6 +15,12 @@ jobs:
       - name: 코드 가져오기
         uses: actions/checkout@v4
 
+      - name: 디버그 서명키 캐시 (매번 같은 키로 서명되게 해서 업데이트가 정상적으로 되게 함)
+        uses: actions/cache@v4
+        with:
+          path: ~/.android/debug.keystore
+          key: android-debug-keystore-v1
+
       - name: 자바(JDK 17) 설치
         uses: actions/setup-java@v4
         with:
