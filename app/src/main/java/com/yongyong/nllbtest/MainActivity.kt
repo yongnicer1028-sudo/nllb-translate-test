@@ -243,8 +243,22 @@ class NllbTranslator(paths: ModelPaths) : AutoCloseable {
     }
 
     private val env = OrtEnvironment.getEnvironment()
-    private val encoderSession: OrtSession = env.createSession(paths.encoderPath)
-    private val decoderSession: OrtSession = env.createSession(paths.decoderPath)
+
+    /**
+     * 모델을 불러올 때 쓰는 옵션이에요. 기본값 그대로 두면 그래프 최적화 작업과
+     * 여러 스레드용 계산 버퍼 때문에 "불러오는 바로 그 순간"에 메모리를 더 많이
+     * 써요 — 이게 태블릿에서 메모리 부족으로 앱이 조용히 꺼지는 원인 중 하나로
+     * 보여서, 메모리를 아끼는 쪽으로 설정을 낮췄어요. (그 대신 번역 속도는
+     * 아주 약간 느려질 수 있어요.)
+     */
+    private fun lightweightSessionOptions(): OrtSession.SessionOptions =
+        OrtSession.SessionOptions().apply {
+            setOptimizationLevel(OrtSession.SessionOptions.OptLevel.BASIC_OPT)
+            setIntraOpNumThreads(1)
+        }
+
+    private val encoderSession: OrtSession = env.createSession(paths.encoderPath, lightweightSessionOptions())
+    private val decoderSession: OrtSession = env.createSession(paths.decoderPath, lightweightSessionOptions())
     private val tokenizer: HuggingFaceTokenizer = HuggingFaceTokenizer.newInstance(File(paths.tokenizerPath).toPath())
 
     init {
