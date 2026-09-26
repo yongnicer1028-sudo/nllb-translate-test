@@ -26,6 +26,7 @@ import android.util.Log
 import android.widget.Toast
 import androidx.appcompat.app.AppCompatActivity
 import com.yongyong.nllbtest.databinding.ActivityMainBinding
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
@@ -430,9 +431,23 @@ class MainActivity : AppCompatActivity() {
                 binding.btnDownloadModel.isEnabled = true
                 binding.btnDownloadModel.text = "모델 다시 불러오기"
                 binding.btnTranslate.isEnabled = true
-            } catch (e: Exception) {
+            } catch (e: CancellationException) {
+    // 화면을 나가서 정상적으로 취소된 경우예요. 이건 진짜 오류가 아니니까
+    // 그대로 다시 던져서 코루틴이 원래 하던 대로 정리되게 둬요.
+    throw e
+} catch (e: Throwable) {
+    // 원래는 Exception만 잡았는데, 메모리가 부족해서 나는 OutOfMemoryError는
+    // Exception이 아니라 Error라서 그동안 여기서 안 잡히고 앱이 통째로
+    // 조용히 꺼져버렸어요 (에러 메시지도 없이 그냥 화면이 홈으로 내려가는
+    // 것처럼 보였던 이유가 이거예요). Throwable로 바꿔서 이제는 화면에
+    // 원인을 보여주고 앱은 안 죽게 만들었어요.
                 Log.e(TAG, "모델 불러오기 실패", e)
-                binding.textModelStatus.text = "모델 상태: 불러오기 실패 - ${e.message}"
+                val reason = if (e is OutOfMemoryError) {
+    "메모리 부족 (이 기기에서 번역 모델을 불러오기엔 램이 부족해요)"
+} else {
+    e.message ?: e.toString()
+}
+binding.textModelStatus.text = "모델 상태: 불러오기 실패 - $reason"
                 binding.btnDownloadModel.isEnabled = true
                 Toast.makeText(this@MainActivity, "실패 내용을 캡처해서 알려주세요", Toast.LENGTH_LONG).show()
             }
