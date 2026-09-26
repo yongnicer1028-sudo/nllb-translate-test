@@ -1,7 +1,7 @@
 package com.yongyong.nllbtest
 
 // ─────────────────────────────────────────────────────────────────────────
-// 1단계 테스트판: 음성인식(위스퍼)은 아직 없고, 번역 엔진(NLLB)만 따로 떼서
+// 1단계 테스트판: 음성인식(위스퍼)은 아직 없고, 번역 엔진(M2M100)만 따로 떼서
 // "폰 안에서 실제로 잘 돌아가는지" 확인하는 화면이에요.
 //
 // 구성:
@@ -10,11 +10,20 @@ package com.yongyong.nllbtest
 //  - NllbTranslator: 실제로 문장을 번역하는 엔진 (ONNX Runtime 사용)
 //  - MainActivity: 화면 (다운로드 버튼, 입력창, 번역 버튼, 결과창)
 //
-// ⚠️ 중요: 일본어(jpn_Jpan), 한국어(kor_Hang) 같은 "언어 코드"의 내부 숫자값을
+// ⚠️ 중요: 일본어(__ja__), 한국어(__ko__) 같은 "언어 코드"의 내부 숫자값을
 // 이 코드가 직접 하드코딩하지 않아요. 그 값이 정확히 몇 번인지 사람이 손으로
 // 계산하면 실수하기 쉬운 부분이라서, 대신 번역 모델과 같이 배포되는
 // tokenizer.json 파일에서 "그 코드에 해당하는 숫자가 몇 번인지"를 앱이
 // 실행될 때 직접 읽어오게 만들었어요. (langTokenId 함수 참고)
+//
+// ⚠️ 모델을 NLLB-200(약 900MB, 양자화 기준)에서 M2M100-418M(약 630MB)으로
+// 바꿨어요. encoder_model_quantized.onnx(약 288MB) + decoder_model_quantized.onnx
+// (약 339MB)를 실제로 확인해서 계산한 수치예요 — NLLB보다 약 30% 더 작아요.
+//
+// ⚠️ M2M100은 NLLB와 디코더 "시작 방식"이 달라요. NLLB는 목표 언어 코드
+// 하나만 먼저 넣으면 됐지만, M2M100은 config.json의 decoder_start_token_id
+// (문장끝 표시, EOS)를 먼저 넣고 그 다음에 목표 언어 코드를 넣어야 해요.
+// (NllbTranslator.translate 함수 참고)
 // ─────────────────────────────────────────────────────────────────────────
 
 import ai.djl.huggingface.tokenizers.HuggingFaceTokenizer
@@ -54,7 +63,9 @@ data class ModelPaths(
 
 object ModelManager {
 
-    private const val REPO = "Xenova/nllb-200-distilled-600M"
+    // 원래 NLLB-200(약 900MB)을 썼는데 메모리 부족으로 계속 꺼져서, 더 작은
+    // M2M100-418M(약 630MB)로 바꿨어요.
+    private const val REPO = "Xenova/m2m100_418M"
     private const val API_URL = "https://huggingface.co/api/models/$REPO"
     private const val FILE_BASE_URL = "https://huggingface.co/$REPO/resolve/main/"
 
@@ -65,7 +76,8 @@ object ModelManager {
     // (이 값이 없으면: 디코더 선택 로직을 고쳐도, 이미 큰 파일을 받아버린
     //  태블릿에서는 새 코드가 적용 안 되고 계속 옛날의 큰 파일을 불러오려다
     //  메모리 부족으로 앱이 꺼지는 걸 반복하게 돼요.)
-    private const val MODEL_SCHEMA_VERSION = 2
+    // 3으로 올려서, 기기에 남아있는 옛날 NLLB 파일을 무시하고 M2M100을 새로 받게 해요.
+    private const val MODEL_SCHEMA_VERSION = 3
 
     private val client = OkHttpClient.Builder()
         .connectTimeout(30, TimeUnit.SECONDS)
@@ -238,7 +250,10 @@ data class TranslateResult(val text: String, val elapsedMs: Long)
 class NllbTranslator(paths: ModelPaths) : AutoCloseable {
 
     companion object {
+        // M2M100의 config.json 값 그대로예요: eos_token_id=2, decoder_start_token_id=2
+        // (두 값이 같아요 — M2M100은 EOS를 디코더 시작 신호로도 같이 써요).
         private const val EOS_ID = 2L
+        private const val DECODER_START_TOKEN_ID = 2L
         private const val MAX_NEW_TOKENS = 80
     }
 
@@ -275,7 +290,7 @@ class NllbTranslator(paths: ModelPaths) : AutoCloseable {
         }
     }
 
-    /** 문자열로 된 언어 코드(예: "jpn_Jpan")의 실제 내부 숫자 id를 tokenizer.json에서 읽어와요. */
+    /** 문자열로 된 언어 코드(예: "__ja__")의 실제 내부 숫자 id를 tokenizer.json에서 읽어와요. */
     private fun langTokenId(langCode: String): Long {
         val encoding = tokenizer.encode(langCode, false, false)
         val ids = encoding.ids
@@ -295,7 +310,7 @@ class NllbTranslator(paths: ModelPaths) : AutoCloseable {
         val tgtId = langTokenId(tgtLang)
         val bodyIds = tokenizer.encode(text, false, false).ids
 
-        // NLLB 입력 형식: [소스 언어 코드] + 실제 문장 토큰들 + [문장끝 표시]
+        // M2M100 입력 형식: [소스 언어 코드] + 실제 문장 토큰들 + [문장끝 표시]
         val inputIds = LongArray(bodyIds.size + 2)
         inputIds[0] = srcId
         for (i in bodyIds.indices) inputIds[i + 1] = bodyIds[i]
@@ -314,7 +329,7 @@ class NllbTranslator(paths: ModelPaths) : AutoCloseable {
                         } as OnnxTensor
 
                     // 한 글자(토큰)씩 순서대로 만들어나가요 (제일 확률 높은 걸 그대로 고르는 방식).
-                    val generated = mutableListOf(tgtId)
+                    val generated = mutableListOf(DECODER_START_TOKEN_ID, tgtId)
                     var steps = 0
                     while (steps < MAX_NEW_TOKENS) {
                         val decInputIds = generated.toLongArray()
@@ -355,7 +370,7 @@ class NllbTranslator(paths: ModelPaths) : AutoCloseable {
                     }
 
                     // 맨 앞의 "목표 언어 코드"랑 마지막 EOS는 실제 번역 문장이 아니니 빼고 글자로 되돌려요.
-                    val outputIds = generated.drop(1).filter { it != EOS_ID }.toLongArray()
+                    val outputIds = generated.drop(2).filter { it != EOS_ID }.toLongArray()
                     val resultText = tokenizer.decode(outputIds, true)
                     val elapsed = System.currentTimeMillis() - startTime
                     return TranslateResult(resultText, elapsed)
@@ -390,6 +405,12 @@ class MainActivity : AppCompatActivity() {
 
         binding.btnDownloadModel.setOnClickListener { startDownloadOrLoad() }
         binding.btnTranslate.setOnClickListener { runTranslate() }
+
+        binding.textBuildInfo.text = try {
+            "빌드 버전: " + packageManager.getPackageInfo(packageName, 0).versionName
+        } catch (e: Exception) {
+            ""
+        }
 
         checkExistingModel()
     }
@@ -487,7 +508,7 @@ binding.textModelStatus.text = "모델 상태: 불러오기 실패 - $reason"
         activityScope.launch {
             try {
                 val result = withContext(Dispatchers.Default) {
-                    engine.translate(text, "jpn_Jpan", "kor_Hang")
+                    engine.translate(text, "__ja__", "__ko__")
                 }
                 binding.textOutput.text = result.text
                 binding.textTiming.text = "걸린 시간: ${result.elapsedMs} ms"
