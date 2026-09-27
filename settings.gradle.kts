@@ -18,3 +18,4 @@ rootProject.name = "NllbTranslateTest"
 include(":app")
 include(":tokenizer-check")
 include(":translate-quality-check")
+include(":model-speed-check")
