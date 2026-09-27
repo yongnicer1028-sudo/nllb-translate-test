@@ -27,6 +27,12 @@ private const val EOS_ID = 2L
 private const val DECODER_START_TOKEN_ID = 2L
 private const val MAX_NEW_TOKENS = 80
 
+// 그리디 방식은 가끔 "아니, 아니, 아니, ..." 처럼 같은 표현을 끝없이 반복하는
+// 유명한 버그가 있어요 (1차 테스트에서 NLLB-200이 실제로 이 버그에 걸려서
+// 19초 넘게 걸리고 결과도 깨졌었어요). 최근 3개 토큰이 이미 나왔던 패턴과
+// 겹치면 그 다음 토큰을 후보에서 빼는 방식(no-repeat-ngram)으로 막아요.
+private const val NO_REPEAT_NGRAM_SIZE = 3
+
 // 예전에 기본 tokenizer.json 에서 발견됐던 병합(merge) 오류를 고쳐서 우리
 // 저장소에 올려둔 버전이에요. M2M100 은 반드시 이 고쳐진 버전을 써야 해요.
 private const val FIXED_M2M100_TOKENIZER_URL =
@@ -199,16 +205,28 @@ private fun greedyDecode(
     var steps = 0
     while (steps < MAX_NEW_TOKENS) {
         val decInputIds = generated.toLongArray()
+        val banned = bannedNextTokens(generated)
         val nextId = OnnxTensor.createTensor(env, arrayOf(decInputIds)).use { decInputTensor ->
             val inputs = buildDecoderInputs(decoderSession, decInputTensor, encoderHidden, maskTensor)
             decoderSession.run(inputs).use { result ->
                 val logits = lastPositionLogits(result)
-                var bestId = 0
+                var bestId = -1
                 var bestScore = Float.NEGATIVE_INFINITY
                 for (i in logits.indices) {
+                    if (i in banned) continue
                     if (logits[i] > bestScore) {
                         bestScore = logits[i]
                         bestId = i
+                    }
+                }
+                // 이론상 모든 후보가 다 막히는 일은 없지만(벡터 크기가 훨씬 크니까),
+                // 혹시 모를 안전장치로 막힌 것도 포함해서 다시 한번 최댓값을 찾아요.
+                if (bestId == -1) {
+                    for (i in logits.indices) {
+                        if (logits[i] > bestScore) {
+                            bestScore = logits[i]
+                            bestId = i
+                        }
                     }
                 }
                 bestId.toLong()
@@ -219,6 +237,21 @@ private fun greedyDecode(
         if (nextId == EOS_ID) break
     }
     return generated.drop(2).filter { it != EOS_ID }.toLongArray()
+}
+
+/** 최근에 나온 (NO_REPEAT_NGRAM_SIZE - 1)개 토큰 패턴이 예전에도 나온 적 있다면,
+ *  그 뒤에 이어졌던 토큰을 이번에는 후보에서 빼서 같은 구절이 무한 반복되는 걸 막아요. */
+private fun bannedNextTokens(generated: List<Long>): Set<Int> {
+    val prefixLen = NO_REPEAT_NGRAM_SIZE - 1
+    if (generated.size < prefixLen) return emptySet()
+    val prefix = generated.takeLast(prefixLen)
+    val banned = mutableSetOf<Int>()
+    for (i in 0..generated.size - prefixLen - 1) {
+        if (generated.subList(i, i + prefixLen) == prefix) {
+            banned.add(generated[i + prefixLen].toInt())
+        }
+    }
+    return banned
 }
 
 private fun buildDecoderInputs(
