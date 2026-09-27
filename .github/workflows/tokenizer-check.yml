@@ -27,3 +27,37 @@ jobs:
 
       - name: run tokenizer check
         run: gradle :tokenizer-check:run --no-daemon --stacktrace
+
+      - name: download tokenizer.json for inspection
+        run: curl -sL -o tokenizer.json https://huggingface.co/Xenova/m2m100_418M/resolve/main/tokenizer.json
+
+      - name: inspect tokenizer.json around the error
+        run: |
+          python3 -c "
+          import json
+          with open('tokenizer.json', encoding='utf-8') as f:
+              lines = f.readlines()
+          print('total lines:', len(lines))
+          for i in range(360449, 360459):
+              if 0 <= i < len(lines):
+                  print(i+1, repr(lines[i][:200]))
+          print()
+          with open('tokenizer.json', encoding='utf-8') as f:
+              data = json.load(f)
+          model = data.get('model', {})
+          print('model type:', model.get('type'))
+          merges = model.get('merges', [])
+          print('merges count:', len(merges))
+          print('first 3 merges:', merges[:3])
+          print('merges entry type:', type(merges[0]) if merges else None)
+          vocab = model.get('vocab', {})
+          print('vocab size:', len(vocab))
+          print('mars symbol in vocab:', '♂' in vocab)
+          added = data.get('added_tokens', [])
+          print('added_tokens count:', len(added))
+          mars_added = [t for t in added if '♂' in t.get('content','')]
+          print('mars in added_tokens:', mars_added)
+          mars_merges = [m for m in merges if '♂' in (m if isinstance(m, str) else ' '.join(m))]
+          print('mars merges count:', len(mars_merges))
+          print('sample mars merges:', mars_merges[:5])
+          "
