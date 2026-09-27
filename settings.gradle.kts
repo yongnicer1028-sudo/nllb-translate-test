@@ -16,3 +16,4 @@ dependencyResolutionManagement {
 
 rootProject.name = "NllbTranslateTest"
 include(":app")
+include(":tokenizer-check")
