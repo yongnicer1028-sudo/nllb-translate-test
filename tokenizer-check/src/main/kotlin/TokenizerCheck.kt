@@ -1,16 +1,15 @@
 // ─────────────────────────────────────────────────────────────────────────
 // 실제 폰 앱이 다운로드해서 쓰는 tokenizer.json 파일을 여기(깃허브 서버)에서도
 // 똑같이 받아서, 똑같은 토크나이저 라이브러리로 불러와봐요.
-// 여기서 성공하면 -> 문제는 "안드로이드에서만" 생기는 문제라는 뜻.
-// 여기서도 똑같이 실패하면 -> tokenizer.json 파일 자체(또는 이 라이브러리
-//   버전과의 궁합) 문제라는 뜻이라서, 폰으로 안 옮겨봐도 원인을 알 수 있어요.
 //
-// 추가로: 만약 실패한다면, merges(합치기 규칙) 목록을 반으로 자르고 또 자르고
-// 하면서(이분 탐색) "정확히 몇 번째 merge 줄이 문제인지"까지 찾아내요.
+// 앞서 이분 탐색으로 확인한 결과: merges(합치기 규칙) 목록 안에 "합쳤을 때
+// 결과 토큰이 vocab(단어 사전)에 없는" 이상한 항목이 최소 2개 이상 있었어요.
+// 하나씩 이분 탐색으로 찾는 건 너무 느리니까, 이번엔 231,277개 merges 전체를
+// 한 번에 쭉 검사해서 "문제 있는 항목을 전부" 찾아내고, 그것들만 빼고
+// 새로운(고쳐진) tokenizer.json을 만들어서 그게 진짜로 잘 불러와지는지까지
+// 확인해요.
 // ─────────────────────────────────────────────────────────────────────────
 import ai.djl.huggingface.tokenizers.HuggingFaceTokenizer
-import com.google.gson.JsonArray
-import com.google.gson.JsonObject
 import com.google.gson.JsonParser
 import java.io.File
 import java.net.URI
@@ -40,24 +39,25 @@ fun main() {
 
     println()
     println("=== 2) loading with HuggingFaceTokenizer (original file, no changes) ===")
-    val originalOk = tryLoadFile(dest)
-    if (originalOk) {
+    if (tryLoadFile(dest)) {
         println()
         println("=== RESULT_OK ===")
         return
     }
 
     println()
-    println("=== 3) bisecting the merges list to find the exact bad entry ===")
-    findBadMergeEntry(dest)
+    println("=== 3) scanning ALL merge entries for ones whose result is not in vocab ===")
+    scanAndFix(dest)
 }
 
 private fun tryLoadFile(file: File): Boolean {
     return try {
         val tokenizer = HuggingFaceTokenizer.newInstance(file.toPath())
         println("SUCCESS: tokenizer loaded")
-        val enc = tokenizer.encode("こんにちは", false, false)
-        println("sanity encode ids: ${enc.ids.toList()}")
+        val ja = tokenizer.encode("こんにちは、元気ですか？", false, false)
+        println("sanity encode (Japanese) ids: ${ja.ids.toList()}")
+        val ko = tokenizer.decode(ja.ids, true)
+        println("sanity decode back: $ko")
         true
     } catch (e: Throwable) {
         println("FAIL: ${e.javaClass.name}: ${e.message}")
@@ -65,98 +65,83 @@ private fun tryLoadFile(file: File): Boolean {
     }
 }
 
-private fun findBadMergeEntry(originalFile: File) {
+private fun scanAndFix(originalFile: File) {
     val root = JsonParser.parseReader(originalFile.bufferedReader(Charsets.UTF_8)).asJsonObject
     val model = root.getAsJsonObject("model")
     val merges = model.getAsJsonArray("merges")
     val total = merges.size()
     println("total merges: $total")
 
-    val tempFile = File("tokenizer_bisect.json")
+    val vocabObj = model.getAsJsonObject("vocab")
+    val vocab = HashSet<String>(vocabObj.size() * 2)
+    for (key in vocabObj.keySet()) vocab.add(key)
+    println("vocab size: ${vocab.size}")
 
-    // prefixLen 개의 merge만 남겼을 때 성공하는지 확인하는 함수
-    fun tryPrefix(prefixLen: Int): Boolean {
-        val truncated = JsonArray()
-        for (i in 0 until prefixLen) {
-            truncated.add(merges[i])
-        }
-        model.add("merges", truncated)
-        tempFile.writeText(root.toString(), Charsets.UTF_8)
-        return tryLoadFileQuiet(tempFile)
-    }
+    data class BadEntry(val index: Int, val text: String, val reason: String)
+    val bad = ArrayList<BadEntry>()
 
-    // 이분 탐색: prefixLen이 lo면 성공, hi면 실패하는 상태를 유지하면서 좁혀나가요.
-    var lo = 0
-    var hi = total
-    // 우선 0개(성공해야 정상)와 전체(실패해야 정상)를 확인
-    println("checking prefix length 0 (should succeed)...")
-    if (!tryPrefix(0)) {
-        println("!!! even 0 merges fails -> problem is NOT in merges list itself (maybe vocab/added_tokens/other section). Stopping bisection.")
-        return
-    }
-    println("checking prefix length $total (should fail, same as original)...")
-    if (tryPrefix(total)) {
-        println("!!! full merges list actually succeeded here (unstable?). Stopping bisection.")
-        return
-    }
-
-    var steps = 0
-    while (hi - lo > 1) {
-        val mid = (lo + hi) / 2
-        val ok = tryPrefix(mid)
-        steps++
-        println("step $steps: prefix length $mid -> ${if (ok) "OK" else "FAIL"}")
-        if (ok) lo = mid else hi = mid
-    }
-
-    val badIndex = hi - 1 // 0-based index of the first bad merge entry
-    println()
-    println("=== FOUND: first bad merge entry is at 0-based index $badIndex (1-based #${badIndex + 1} of $total) ===")
-
-    val context = 5
-    val start = maxOf(0, badIndex - context)
-    val end = minOf(total - 1, badIndex + context)
-    println("context around the bad entry:")
-    for (i in start..end) {
-        val marker = if (i == badIndex) " <-- BAD" else ""
-        println("  [$i] ${merges[i]}$marker")
-    }
-
-    val badEntry = merges[badIndex]
-    println()
-    println("bad entry raw JSON: $badEntry")
-    if (badEntry.isJsonPrimitive) {
-        val s = badEntry.asString
-        println("bad entry as string: ${s.let { "\"" + it + "\"" }}")
-        println("bad entry char count: ${s.length}")
-        println("bad entry chars (codepoints): ${s.map { "'${it}' (U+%04X)".format(it.code) }}")
-        val parts = s.split(" ")
-        println("split by single space -> ${parts.size} parts: $parts")
-    }
-
-    // 이 하나의 항목만 빼면 전체 나머지가 정상 로딩되는지 최종 확인
-    println()
-    println("=== 4) double-check: removing ONLY this one bad entry, does the rest load fine? ===")
-    val withoutBad = JsonArray()
     for (i in 0 until total) {
-        if (i != badIndex) withoutBad.add(merges[i])
+        val el = merges[i]
+        if (!el.isJsonPrimitive) {
+            bad.add(BadEntry(i, el.toString(), "not a string entry"))
+            continue
+        }
+        val s = el.asString
+        val parts = s.split(" ")
+        if (parts.size != 2 || parts[0].isEmpty() || parts[1].isEmpty()) {
+            bad.add(BadEntry(i, s, "does not split into exactly 2 non-empty parts (got ${parts.size})"))
+            continue
+        }
+        val (a, b) = parts
+        if (!vocab.contains(a)) {
+            bad.add(BadEntry(i, s, "left part '$a' not in vocab"))
+            continue
+        }
+        if (!vocab.contains(b)) {
+            bad.add(BadEntry(i, s, "right part '$b' not in vocab"))
+            continue
+        }
+        val merged = a + b
+        if (!vocab.contains(merged)) {
+            bad.add(BadEntry(i, s, "merged result '$merged' not in vocab"))
+            continue
+        }
     }
-    model.add("merges", withoutBad)
-    tempFile.writeText(root.toString(), Charsets.UTF_8)
-    val fixedOk = tryLoadFile(tempFile)
+
+    println()
+    println("=== scan complete: ${bad.size} bad merge entries out of $total (${"%.4f".format(bad.size * 100.0 / total)}%) ===")
+    println("showing up to 30 examples:")
+    for (b in bad.take(30)) {
+        println("  [${b.index}] \"${b.text}\" -> ${b.reason}")
+    }
+
+    if (bad.isEmpty()) {
+        println("no bad entries found by this check, but the original file still failed to load.")
+        println("the problem must be somewhere else (not a simple merge-vs-vocab mismatch). stopping here.")
+        return
+    }
+
+    println()
+    println("=== 4) building a FIXED tokenizer.json with all bad merge entries removed ===")
+    val badIndices = bad.map { it.index }.toHashSet()
+    val fixedMerges = com.google.gson.JsonArray()
+    for (i in 0 until total) {
+        if (i !in badIndices) fixedMerges.add(merges[i])
+    }
+    println("fixed merges count: ${fixedMerges.size()} (removed ${total - fixedMerges.size()})")
+    model.add("merges", fixedMerges)
+
+    val fixedFile = File("tokenizer.fixed.json")
+    fixedFile.writeText(root.toString(), Charsets.UTF_8)
+    println("wrote fixed file: ${fixedFile.absolutePath} (${fixedFile.length()} bytes)")
+
+    println()
+    println("=== 5) loading the FIXED tokenizer.json to confirm it actually works ===")
+    val fixedOk = tryLoadFile(fixedFile)
     println()
     if (fixedOk) {
-        println("=== RESULT: removing just entry #$badIndex fixes loading! ===")
+        println("=== RESULT_FIXED_OK: removing ${bad.size} bad merge entries (out of $total) makes the tokenizer load correctly! ===")
     } else {
-        println("=== RESULT: still fails even after removing entry #$badIndex, more than one bad entry may exist. ===")
-    }
-}
-
-private fun tryLoadFileQuiet(file: File): Boolean {
-    return try {
-        HuggingFaceTokenizer.newInstance(file.toPath())
-        true
-    } catch (e: Throwable) {
-        false
+        println("=== RESULT_STILL_FAILS: even after removing all ${bad.size} flagged entries, loading still fails. more investigation needed. ===")
     }
 }
