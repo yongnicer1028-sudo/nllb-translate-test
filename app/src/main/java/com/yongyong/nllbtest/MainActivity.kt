@@ -1,39 +1,47 @@
 package com.yongyong.nllbtest
 
 // ─────────────────────────────────────────────────────────────────────────
-// 1단계 테스트판: 음성인식(위스퍼)은 아직 없고, 번역 엔진(M2M100)만 따로 떼서
+// 1단계 테스트판: 음성인식(위스퍼)은 아직 없고, 번역 엔진만 따로 떼서
 // "폰 안에서 실제로 잘 돌아가는지" 확인하는 화면이에요.
 //
 // 구성:
-//  - ModelManager: 번역에 필요한 파일 3개(인코더, 디코더, 토크나이저)를
-//    첫 실행 시 인터넷에서 받아오는 역할
-//  - NllbTranslator: 실제로 문장을 번역하는 엔진 (ONNX Runtime 사용)
-//  - MainActivity: 화면 (다운로드 버튼, 입력창, 번역 버튼, 결과창)
+// - ModelManager: 번역에 필요한 파일 3개(인코더, 디코더, 토크나이저)를
+// 첫 실행 시 인터넷에서 받아오는 역할
+// - NllbTranslator: 실제로 문장을 번역하는 엔진 (ONNX Runtime 사용)
+// - MainActivity: 화면 (다운로드 버튼, 입력창, 번역 버튼, 결과창)
 //
-// ⚠️ 중요: 일본어(__ja__), 한국어(__ko__) 같은 "언어 코드"의 내부 숫자값을
+// ⚠️ 중요: 일본어(jpn_Jpan), 한국어(kor_Hang) 같은 "언어 코드"의 내부 숫자값을
 // 이 코드가 직접 하드코딩하지 않아요. 그 값이 정확히 몇 번인지 사람이 손으로
 // 계산하면 실수하기 쉬운 부분이라서, 대신 번역 모델과 같이 배포되는
 // tokenizer.json 파일에서 "그 코드에 해당하는 숫자가 몇 번인지"를 앱이
 // 실행될 때 직접 읽어오게 만들었어요. (langTokenId 함수 참고)
 //
-// ⚠️ 모델을 NLLB-200(약 900MB, 양자화 기준)에서 M2M100-418M(약 630MB)으로
-// 바꿨어요. encoder_model_quantized.onnx(약 288MB) + decoder_model_quantized.onnx
-// (약 339MB)를 실제로 확인해서 계산한 수치예요 — NLLB보다 약 30% 더 작아요.
+// ⚠️ 모델을 다시 NLLB-200-distilled-600M(양자화 기준 약 864MB)로 바꿨어요.
+// 원래 이 모델을 썼다가 메모리 부족으로 더 작은 M2M100-418M(약 603MB)로
+// 한 번 내렸었는데, 그동안 (1) 메모리 부족이 나도 조용히 안 죽고 화면에
+// "메모리 부족" 이라고 뜨게 고쳤고, (2) 깃허브 서버에서 두 모델을 같은
+// 조건(스레드 1개 제한)으로 직접 비교 테스트한 결과 NLLB-200이 M2M100보다
+// 대략 30% 정도만 느리면서(치명적이지 않은 수준) 번역 품질은 여러 문장에서
+// 눈에 띄게 더 자연스러웠어서, 다시 NLLB-200으로 올렸어요. 이번에 태블릿
+// 에서 실제로 메모리가 괜찮은지 확인하는 게 이 버전의 목적이에요.
 //
-// ⚠️ M2M100은 NLLB와 디코더 "시작 방식"이 달라요. NLLB는 목표 언어 코드
-// 하나만 먼저 넣으면 됐지만, M2M100은 config.json의 decoder_start_token_id
-// (문장끝 표시, EOS)를 먼저 넣고 그 다음에 목표 언어 코드를 넣어야 해요.
-// (NllbTranslator.translate 함수 참고)
+// ⚠️ NLLB-200과 M2M100은 둘 다 내부적으로 같은 아키텍처(M2M100ForConditionalGeneration,
+// model_type: m2m_100)라서, EOS/디코더 시작 토큰 번호(둘 다 2번)를 포함한
+// 입출력 방식이 완전히 동일해요. 다른 건 언어 코드 표기법 정도예요
+// (M2M100은 "__ja__" 같은 형태, NLLB는 "jpn_Jpan" 같은 FLORES-200 코드).
 //
-// ⚠️ huggingface.co의 Xenova/m2m100_418M 저장소에 있는 tokenizer.json 파일
-// 자체에 버그가 있었어요: merge(합치기) 규칙 231,277개 중 1,053개(약 0.46%)가
-// "합친 결과가 단어 사전(vocab)에 아예 없는" 이상한 규칙이라서, 폰뿐 아니라
-// 컴퓨터에서 완전히 똑같은 라이브러리로 불러와도 무조건 "Token X out of
-// vocabulary" 오류로 실패했어요 (GitHub Actions로 직접 재현/확인함 — 폰
-// 문제가 아니라 그 파일 자체의 문제였어요). 그래서 그 1,053개를 제거해서
-// 고친 tokenizer.json을 우리 저장소의 GitHub Release에 따로 올려두고,
-// 토크나이저 파일만 그 주소에서 받아와요. (자세한 내용은 ModelManager의
-// FIXED_TOKENIZER_URL 주석 참고)
+// ⚠️ 그리디(매번 제일 확률 높은 토큰만 고르는) 방식은 가끔 "아니, 아니, 아니,
+// ..." 처럼 같은 표현을 끝없이 반복하는 유명한 버그가 있어요. 비교 테스트
+// 중 NLLB-200에서 실제로 이 버그가 나서(한 문장이 19초 넘게 걸리고 결과도
+// 깨짐) "최근 나온 표현이 이미 나왔으면 그 다음 토큰은 후보에서 제외"하는
+// 안전장치(no-repeat-ngram)를 추가해서 고쳤어요. (NllbTranslator.translate
+// 함수의 bannedNextTokens 참고)
+//
+// ⚠️ 예전에 huggingface.co의 Xenova/m2m100_418M 저장소 tokenizer.json 파일
+// 자체에 버그가 있어서(merge 규칙 1,053개가 vocab에 없는 결과를 만듦) 고친
+// 버전을 우리 저장소에 따로 올려서 썼었어요. NLLB-200 저장소의 tokenizer.json
+// 은 비교 테스트에서 6문장 모두 정상적으로 처리돼서, 같은 문제는 없는 걸로
+// 확인했어요 — 그래서 NLLB는 huggingface 원본 tokenizer.json을 그대로 받아요.
 // ─────────────────────────────────────────────────────────────────────────
 
 import ai.djl.huggingface.tokenizers.HuggingFaceTokenizer
@@ -73,35 +81,34 @@ data class ModelPaths(
 
 object ModelManager {
 
-    // 원래 NLLB-200(약 900MB)을 썼는데 메모리 부족으로 계속 꺼져서, 더 작은
-    // M2M100-418M(약 630MB)로 바꿨어요.
-    private const val REPO = "Xenova/m2m100_418M"
+    // 한 번 메모리 부족으로 M2M100-418M(약 603MB)로 내렸다가, 지금은 다시
+    // NLLB-200-distilled-600M(양자화 기준 약 864MB)로 올렸어요. (자세한
+    // 이유는 파일 맨 위 주석 참고)
+    private const val REPO = "Xenova/nllb-200-distilled-600M"
     private const val API_URL = "https://huggingface.co/api/models/$REPO"
     private const val FILE_BASE_URL = "https://huggingface.co/$REPO/resolve/main/"
 
     // 어떤 파일 "종류"를 골라서 받았는지 나타내는 버전 번호예요. 나중에 파일
     // 선택 로직(resolveFileNames)을 고치면 이 숫자를 1씩 올려주세요 — 그래야
-    // 예전 로직으로 잘못 받아둔 파일(예: 용량이 훨씬 큰 fp32 디코더)이 기기에
-    // 남아있어도, 앱이 그걸 재사용하지 않고 새 로직으로 다시 받아요.
+    // 예전 로직으로 잘못 받아둔 파일(예: 용량이 훨씬 큰 fp32/int8 디코더)이
+    // 기기에 남아있어도, 앱이 그걸 재사용하지 않고 새 로직으로 다시 받아요.
     // (이 값이 없으면: 디코더 선택 로직을 고쳐도, 이미 큰 파일을 받아버린
-    //  태블릿에서는 새 코드가 적용 안 되고 계속 옛날의 큰 파일을 불러오려다
-    //  메모리 부족으로 앱이 꺼지는 걸 반복하게 돼요.)
-    // 3으로 올려서, 기기에 남아있는 옛날 NLLB 파일을 무시하고 M2M100을 새로 받게 해요.
-    private const val MODEL_SCHEMA_VERSION = 3
+    // 태블릿에서는 새 코드가 적용 안 되고 계속 옛날의 큰 파일을 불러오려다
+    // 메모리 부족으로 앱이 꺼지는 걸 반복하게 돼요.)
+    // 4로 올려서, 기기에 남아있는 옛날 M2M100 파일을 무시하고 NLLB-200을 새로 받게 해요.
+    private const val MODEL_SCHEMA_VERSION = 4
 
-    // ⚠️ huggingface의 tokenizer.json 자체에 버그가 있어서(merge 규칙
-    // 231,277개 중 1,053개가 vocab에 없는 결과를 만드는 이상한 규칙),
-    // 그 1,053개를 제거한 "고쳐진" 버전을 우리 저장소의 GitHub Release에
-    // 따로 올려두고, 토크나이저 파일만 huggingface 대신 여기서 받아요.
-    // (인코더/디코더 onnx 파일은 문제 없는 파일들이라 그대로 huggingface에서 받아요)
-    private const val FIXED_TOKENIZER_URL =
-        "https://github.com/yongnicer1028-sudo/nllb-translate-test/releases/download/tokenizer-fixed-m2m100/tokenizer.json"
+    // NLLB-200 저장소의 tokenizer.json은 비교 테스트에서 문제가 없었던 걸로
+    // 확인해서, huggingface 원본 주소를 그대로 써요 (M2M100 때처럼 우리
+    // 저장소에 고쳐서 따로 올려둘 필요가 없어요).
+    private const val TOKENIZER_URL = "${FILE_BASE_URL}tokenizer.json"
 
-    // 고쳐진 tokenizer.json이 나중에 또 바뀌면(예: 문제를 더 찾아서 다시 올리면)
-    // 이 숫자를 1 올려주세요. 그러면 이미 (예전의 고장난) 토크나이저를 받아둔
-    // 기기도 인코더/디코더(630MB)는 그대로 두고 토크나이저 파일(약 5MB)만
-    // 다시 받아요 — 모델을 통째로 다시 받을 필요가 없어요.
-    private const val TOKENIZER_FIX_VERSION = 1
+    // 지금 기기에 받아져 있는 tokenizer.json이 "몇 번째 버전"인지 표시하는
+    // 값이에요. 이 값을 바꾸면(모델을 바꾸거나, 토크나이저 파일 자체가
+    // 나중에 또 바뀌면) 이미 받아둔 인코더/디코더(수백MB)는 그대로 두고
+    // 토크나이저 파일(수십MB)만 다시 받아요. M2M100 → NLLB-200으로 모델
+    // 자체를 바꿨으니 이번엔 2로 올려요.
+    private const val TOKENIZER_VERSION = 2
 
     private val client = OkHttpClient.Builder()
         .connectTimeout(30, TimeUnit.SECONDS)
@@ -117,7 +124,7 @@ object ModelManager {
     /**
      * 이미 파일 3개가 전부 정상적으로 다운로드되어 있는지 확인.
      * (1단계라 정확한 용량 검증까지는 안 하고, 파일 존재+용량>0 만 확인해요.
-     *  나중에 문제가 생기면 이 부분에 체크섬 검증을 추가하면 좋아요.)
+     * 나중에 문제가 생기면 이 부분에 체크섬 검증을 추가하면 좋아요.)
      */
     fun isDownloaded(context: android.content.Context): ModelPaths? {
         val dir = modelsDir(context)
@@ -126,8 +133,8 @@ object ModelManager {
             versionFile.readText().trim().toIntOrNull()
         } else null
         if (savedVersion != MODEL_SCHEMA_VERSION) {
-            // 옛날 로직으로 받아둔 파일일 수 있어요 (예: 메모리 부족을 일으키는
-            // 큰 디코더). 안전하게 새로 받도록 "없음" 취급해요.
+            // 옛날 로직/모델로 받아둔 파일일 수 있어요. 안전하게 새로
+            // 받도록 "없음" 취급해요.
             return null
         }
 
@@ -136,15 +143,15 @@ object ModelManager {
         val tok = File(dir, "tokenizer.json")
         if (enc.length() <= 0 || dec.length() <= 0 || tok.length() <= 0) return null
 
-        // 인코더/디코더는 위에서 이미 확인했으니, 토크나이저 파일만 "고쳐진
+        // 인코더/디코더는 위에서 이미 확인했으니, 토크나이저 파일만 "지금
         // 버전"인지 따로 확인해요. 이 버전이 다르면 download()가 알아서
         // 토크나이저 파일만 다시 받고, 이미 받아둔 인코더/디코더는 그대로
-        // 재사용해요 (630MB를 또 받을 필요가 없어요).
+        // 재사용해요 (수백MB를 또 받을 필요가 없어요).
         val tokVersionFile = File(dir, "tokenizer_fix_version.txt")
         val savedTokVersion = if (tokVersionFile.exists()) {
             tokVersionFile.readText().trim().toIntOrNull()
         } else null
-        if (savedTokVersion != TOKENIZER_FIX_VERSION) return null
+        if (savedTokVersion != TOKENIZER_VERSION) return null
 
         return ModelPaths(enc.absolutePath, dec.absolutePath, tok.absolutePath)
     }
@@ -165,10 +172,21 @@ object ModelManager {
                 names.add(siblings.getJSONObject(i).getString("rfilename"))
             }
 
-            // 인코더: onnx/ 폴더 안에서 encoder_model 이 들어간 것 중, quantized(가벼운 버전) 우선
+            // 파일 이름 우선순위: "_quantized.onnx" 로 끝나는 게 제일 작고
+            // 가벼운 표준 8비트 양자화 버전이에요. "int8"/"uint8" 이라는
+            // 이름만 보면 더 작을 것 같지만, 실제로는(NLLB-200 기준)
+            // quantized 파일보다 3배 넘게 큰 경우가 있어서 이름만 보고
+            // 고르면 안 돼요 — 정확한 접미사로 구분해요.
+            fun priority(name: String): Int = when {
+                name.endsWith("_quantized.onnx") -> 0
+                name.contains("int8") || name.contains("uint8") -> 1
+                else -> 2
+            }
+
+            // 인코더: onnx/ 폴더 안에서 encoder_model 이 들어간 파일 중 제일 가벼운 것
             val encoderName = names
                 .filter { it.startsWith("onnx/") && it.contains("encoder_model") && it.endsWith(".onnx") }
-                .sortedBy { name -> if (name.contains("quantized") || name.contains("int8")) 0 else 1 }
+                .sortedBy { priority(it) }
                 .firstOrNull()
                 ?: throw IllegalStateException("인코더(.onnx) 파일을 저장소에서 못 찾았어요. 전체 목록: $names")
 
@@ -180,11 +198,11 @@ object ModelManager {
                     it.startsWith("onnx/") && it.contains("decoder_model") &&
                         !it.contains("merged") && !it.contains("with_past") && it.endsWith(".onnx")
                 }
-                .sortedBy { name -> if (name.contains("quantized") || name.contains("int8")) 0 else 1 }
+                .sortedBy { priority(it) }
                 .firstOrNull()
             val mergedDecoder = names
                 .filter { it.startsWith("onnx/") && it.contains("decoder_model_merged") && it.endsWith(".onnx") }
-                .sortedBy { name -> if (name.contains("quantized") || name.contains("int8")) 0 else 1 }
+                .sortedBy { priority(it) }
                 .firstOrNull()
             val decoderName = plainDecoder ?: mergedDecoder
                 ?: throw IllegalStateException("디코더(.onnx) 파일을 저장소에서 못 찾았어요. 전체 목록: $names")
@@ -196,8 +214,8 @@ object ModelManager {
 
     /**
      * 필요한 파일만 골라서 다운로드해요 — 이미 정상적으로 받아둔 파일은 다시
-     * 안 받아요. 예를 들어 토크나이저 파일만 고쳐졌을 땐 인코더/디코더
-     * (630MB)는 그대로 두고 토크나이저 파일(약 5MB)만 다시 받아요.
+     * 안 받아요. 예를 들어 토크나이저 파일만 바뀌었을 땐 인코더/디코더
+     * (수백MB)는 그대로 두고 토크나이저 파일만 다시 받아요.
      * [onProgress] 는 0~100 사이 값으로, 이번에 실제로 받는 파일들 기준
      * 진행률을 알려줘요.
      */
@@ -222,12 +240,12 @@ object ModelManager {
         val tokVersionFile = File(dir, "tokenizer_fix_version.txt")
         val tokReady = tokFile.length() > 0 &&
             tokVersionFile.exists() &&
-            tokVersionFile.readText().trim().toIntOrNull() == TOKENIZER_FIX_VERSION
+            tokVersionFile.readText().trim().toIntOrNull() == TOKENIZER_VERSION
         if (!tokReady) {
-            targets.add(FIXED_TOKENIZER_URL to tokFile)
+            targets.add(TOKENIZER_URL to tokFile)
         }
 
-        // 파일마다 크기가 크게 달라서(모델 수백MB vs 토크나이저 몇MB), 미리 각 파일 크기를 안 뒤
+        // 파일마다 크기가 크게 달라서(모델 수백MB vs 토크나이저 수십MB), 미리 각 파일 크기를 안 뒤
         // 그냥 "몇 번째 파일"로 대충 진행률을 나누면 부정확해요. 그래서 실제 바이트 수 기준으로 계산해요.
         if (targets.isNotEmpty()) {
             val sizes = LongArray(targets.size)
@@ -258,7 +276,7 @@ object ModelManager {
         // 새로 받은 파일들 기준으로, 이번에 어떤 버전 로직/토크나이저로 받았는지 기록해둡요.
         // (다음에 앱을 켰을 때 isDownloaded()가 이 값을 보고 재사용 여부를 판단해요)
         File(dir, "schema_version.txt").writeText(MODEL_SCHEMA_VERSION.toString())
-        tokVersionFile.writeText(TOKENIZER_FIX_VERSION.toString())
+        tokVersionFile.writeText(TOKENIZER_VERSION.toString())
         return ModelPaths(
             encFile.absolutePath,
             decFile.absolutePath,
@@ -307,11 +325,17 @@ data class TranslateResult(val text: String, val elapsedMs: Long)
 class NllbTranslator(paths: ModelPaths) : AutoCloseable {
 
     companion object {
-        // M2M100의 config.json 값 그대로예요: eos_token_id=2, decoder_start_token_id=2
-        // (두 값이 같아요 — M2M100은 EOS를 디코더 시작 신호로도 같이 써요).
+        // NLLB-200과 M2M100은 같은 아키텍처(model_type: m2m_100)라서 config.json
+        // 값이 동일해요: eos_token_id=2, decoder_start_token_id=2
+        // (두 값이 같아요 — EOS를 디코더 시작 신호로도 같이 써요).
         private const val EOS_ID = 2L
         private const val DECODER_START_TOKEN_ID = 2L
         private const val MAX_NEW_TOKENS = 80
+
+        // 그리디 방식은 가끔 같은 표현을 끝없이 반복하는 버그가 있어서(예:
+        // "아니, 아니, 아니, ..."), 최근에 나온 표현이 이미 나온 적 있으면
+        // 그 다음 토큰을 후보에서 제외하는 안전장치예요.
+        private const val NO_REPEAT_NGRAM_SIZE = 3
     }
 
     private val env = OrtEnvironment.getEnvironment()
@@ -347,7 +371,7 @@ class NllbTranslator(paths: ModelPaths) : AutoCloseable {
         }
     }
 
-    /** 문자열로 된 언어 코드(예: "__ja__")의 실제 내부 숫자 id를 tokenizer.json에서 읽어와요. */
+    /** 문자열로 된 언어 코드(예: "jpn_Jpan")의 실제 내부 숫자 id를 tokenizer.json에서 읽어와요. */
     private fun langTokenId(langCode: String): Long {
         val encoding = tokenizer.encode(langCode, false, false)
         val ids = encoding.ids
@@ -360,6 +384,21 @@ class NllbTranslator(paths: ModelPaths) : AutoCloseable {
         return ids[0]
     }
 
+    /** 최근에 나온 (NO_REPEAT_NGRAM_SIZE - 1)개 토큰 패턴이 예전에도 나온 적 있다면,
+     *  그 뒤에 이어졌던 토큰을 이번에는 후보에서 빼서 같은 구절이 무한 반복되는 걸 막아요. */
+    private fun bannedNextTokens(generated: List<Long>): Set<Int> {
+        val prefixLen = NO_REPEAT_NGRAM_SIZE - 1
+        if (generated.size < prefixLen) return emptySet()
+        val prefix = generated.takeLast(prefixLen)
+        val banned = mutableSetOf<Int>()
+        for (i in 0..generated.size - prefixLen - 1) {
+            if (generated.subList(i, i + prefixLen) == prefix) {
+                banned.add(generated[i + prefixLen].toInt())
+            }
+        }
+        return banned
+    }
+
     fun translate(text: String, srcLang: String, tgtLang: String): TranslateResult {
         val startTime = System.currentTimeMillis()
 
@@ -367,7 +406,7 @@ class NllbTranslator(paths: ModelPaths) : AutoCloseable {
         val tgtId = langTokenId(tgtLang)
         val bodyIds = tokenizer.encode(text, false, false).ids
 
-        // M2M100 입력 형식: [소스 언어 코드] + 실제 문장 토큰들 + [문장끝 표시]
+        // 입력 형식: [소스 언어 코드] + 실제 문장 토큰들 + [문장끝 표시]
         val inputIds = LongArray(bodyIds.size + 2)
         inputIds[0] = srcId
         for (i in bodyIds.indices) inputIds[i + 1] = bodyIds[i]
@@ -385,11 +424,13 @@ class NllbTranslator(paths: ModelPaths) : AutoCloseable {
                             )
                         } as OnnxTensor
 
-                    // 한 글자(토큰)씩 순서대로 만들어나가요 (제일 확률 높은 걸 그대로 고르는 방식).
+                    // 한 글자(토큰)씩 순서대로 만들어나가요 (제일 확률 높은 걸 그대로 고르되,
+                    // 같은 표현이 반복되는 건 막아요).
                     val generated = mutableListOf(DECODER_START_TOKEN_ID, tgtId)
                     var steps = 0
                     while (steps < MAX_NEW_TOKENS) {
                         val decInputIds = generated.toLongArray()
+                        val banned = bannedNextTokens(generated)
                         val nextId = OnnxTensor.createTensor(env, arrayOf(decInputIds)).use { decInputTensor ->
                             val decoderInputsMap = mutableMapOf<String, OnnxTensor>(
                                 "input_ids" to decInputTensor,
@@ -410,12 +451,24 @@ class NllbTranslator(paths: ModelPaths) : AutoCloseable {
                                 @Suppress("UNCHECKED_CAST")
                                 val logitsArr = logitsTensor.value as Array<Array<FloatArray>>
                                 val lastPosition = logitsArr[0][logitsArr[0].size - 1]
-                                var bestId = 0
+                                var bestId = -1
                                 var bestScore = Float.NEGATIVE_INFINITY
                                 for (i in lastPosition.indices) {
+                                    if (i in banned) continue
                                     if (lastPosition[i] > bestScore) {
                                         bestScore = lastPosition[i]
                                         bestId = i
+                                    }
+                                }
+                                // 이론상 모든 후보가 다 막히는 일은 없지만(벡터 크기가
+                                // 훨씬 크니까), 혹시 모를 안전장치로 막힌 것도 포함해서
+                                // 다시 한번 최댓값을 찾아요.
+                                if (bestId == -1) {
+                                    for (i in lastPosition.indices) {
+                                        if (lastPosition[i] > bestScore) {
+                                            bestScore = lastPosition[i]
+                                            bestId = i
+                                        }
                                     }
                                 }
                                 bestId.toLong()
@@ -524,22 +577,22 @@ class MainActivity : AppCompatActivity() {
                 binding.btnDownloadModel.text = "모델 다시 불러오기"
                 binding.btnTranslate.isEnabled = true
             } catch (e: CancellationException) {
-    // 화면을 나가서 정상적으로 취소된 경우예요. 이건 진짜 오류가 아니니까
-    // 그대로 다시 던져서 코루틴이 원래 하던 대로 정리되게 둬요.
-    throw e
-} catch (e: Throwable) {
-    // 원래는 Exception만 잡았는데, 메모리가 부족해서 나는 OutOfMemoryError는
-    // Exception이 아니라 Error라서 그동안 여기서 안 잡히고 앱이 통째로
-    // 조용히 꺼져버렸어요 (에러 메시지도 없이 그냥 화면이 홈으로 내려가는
-    // 것처럼 보였던 이유가 이거예요). Throwable로 바꿔서 이제는 화면에
-    // 원인을 보여주고 앱은 안 죽게 만들었어요.
+                // 화면을 나가서 정상적으로 취소된 경우예요. 이건 진짜 오류가 아니니까
+                // 그대로 다시 던져서 코루틴이 원래 하던 대로 정리되게 둬요.
+                throw e
+            } catch (e: Throwable) {
+                // 원래는 Exception만 잡았는데, 메모리가 부족해서 나는 OutOfMemoryError는
+                // Exception이 아니라 Error라서 그동안 여기서 안 잡히고 앱이 통째로
+                // 조용히 꺼져버렸어요 (에러 메시지도 없이 그냥 화면이 홈으로 내려가는
+                // 것처럼 보였던 이유가 이거예요). Throwable로 바꿔서 이제는 화면에
+                // 원인을 보여주고 앱은 안 죽게 만들었어요.
                 Log.e(TAG, "모델 불러오기 실패", e)
                 val reason = if (e is OutOfMemoryError) {
-    "메모리 부족 (이 기기에서 번역 모델을 불러오기엔 램이 부족해요)"
-} else {
-    e.message ?: e.toString()
-}
-binding.textModelStatus.text = "모델 상태: 불러오기 실패 - $reason"
+                    "메모리 부족 (이 기기에서 번역 모델을 불러오기엔 램이 부족해요)"
+                } else {
+                    e.message ?: e.toString()
+                }
+                binding.textModelStatus.text = "모델 상태: 불러오기 실패 - $reason"
                 binding.btnDownloadModel.isEnabled = true
                 Toast.makeText(this@MainActivity, "실패 내용을 캡처해서 알려주세요", Toast.LENGTH_LONG).show()
             }
@@ -565,7 +618,7 @@ binding.textModelStatus.text = "모델 상태: 불러오기 실패 - $reason"
         activityScope.launch {
             try {
                 val result = withContext(Dispatchers.Default) {
-                    engine.translate(text, "__ja__", "__ko__")
+                    engine.translate(text, "jpn_Jpan", "kor_Hang")
                 }
                 binding.textOutput.text = result.text
                 binding.textTiming.text = "걸린 시간: ${result.elapsedMs} ms"
