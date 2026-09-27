@@ -11,8 +11,8 @@ android {
         applicationId = "com.yongyong.nllbtest"
         minSdk = 26
         targetSdk = 34
-        versionCode = 2
-        versionName = "0.2-phase1-m2m100"
+        versionCode = 3
+        versionName = "0.2.1-phase1-m2m100-tokenizerfix"
     }
 
     buildTypes {
@@ -40,7 +40,7 @@ android {
     packaging {
         // onnxruntime / tokenizers native libraries + Java service files can collide; keep the first one.
         resources.pickFirsts.add("META-INF/*")
-        jniLibs.useLegacyPackaging = true
+        jniLibs.useLegacyPackaging = true; jniLibs.pickFirsts.add("**/libc++_shared.so") // libc++_shared.so 중복 문제 예방
     }
 }
 
@@ -55,7 +55,7 @@ dependencies {
     // M2M100이 쓰는 토크나이저(tokenizer.json)를 그대로 읽어서 문장<->숫자 변환을 해주는 라이브러리.
     // 언어 코드(__ja__, __ko__ 등)의 내부 숫자값을 우리가 직접 하드코딩하지 않고
     // 이 라이브러리가 tokenizer.json에서 그대로 읽어오게 해서 실수를 줄인다.
-    implementation("ai.djl.huggingface:tokenizers:0.31.1")
+    implementation("ai.djl.huggingface:tokenizers:0.33.0"); implementation("ai.djl.android:tokenizer-native:0.33.0") // 안드로이드용 네이티브(so) 파일 추가 - 없으면 로딩 실패
 
     // 모델 파일(수백MB)을 앱 첫 실행 시 다운로드하기 위한 네트워크 라이브러리
     implementation("com.squareup.okhttp3:okhttp:4.12.0")
