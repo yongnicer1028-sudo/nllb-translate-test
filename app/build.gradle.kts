@@ -11,8 +11,8 @@ android {
         applicationId = "com.yongyong.nllbtest"
         minSdk = 26
         targetSdk = 34
-        versionCode = 4
-        versionName = "0.2.2-phase1-m2m100-libcxxfix"
+        versionCode = 5
+        versionName = "0.2.3-phase1-tokenizer-fix"
     }
 
     buildTypes {
