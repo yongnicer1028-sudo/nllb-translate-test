@@ -16,14 +16,15 @@ package com.yongyong.nllbtest
 // tokenizer.json 파일에서 "그 코드에 해당하는 숫자가 몇 번인지"를 앱이
 // 실행될 때 직접 읽어오게 만들었어요. (langTokenId 함수 참고)
 //
-// ⚠️ 모델을 다시 NLLB-200-distilled-600M(양자화 기준 약 864MB)로 바꿨어요.
-// 원래 이 모델을 썼다가 메모리 부족으로 더 작은 M2M100-418M(약 603MB)로
-// 한 번 내렸었는데, 그동안 (1) 메모리 부족이 나도 조용히 안 죽고 화면에
-// "메모리 부족" 이라고 뜨게 고쳤고, (2) 깃허브 서버에서 두 모델을 같은
-// 조건(스레드 1개 제한)으로 직접 비교 테스트한 결과 NLLB-200이 M2M100보다
-// 대략 30% 정도만 느리면서(치명적이지 않은 수준) 번역 품질은 여러 문장에서
-// 눈에 띄게 더 자연스러웠어서, 다시 NLLB-200으로 올렸어요. 이번에 태블릿
-// 에서 실제로 메모리가 괜찮은지 확인하는 게 이 버전의 목적이에요.
+// ⚠️ 이번 버전은 "같은 태블릿에서 두 모델의 실제 속도를 직접 비교"하기 위한
+// 임시 비교판이에요. 방금 전 버전(NLLB-200-distilled-600M)을 태블릿에서
+// 테스트했더니 번역은 잘 됐지만 문장 하나에 7.6초가 걸려서 생각보다 느렸고,
+// 깃허브 서버(x86)에서의 비교 테스트 수치(NLLB-200이 M2M100보다 약 30%
+// 느림)가 실제 폰/태블릿(ARM 칩)에서도 똑같이 적용되는지는 직접 재봐야
+// 확실하다고 판단해서, 잠깐 M2M100-418M(양자화 기준 약 603MB, 더 가벼운
+// 모델)으로 되돌려서 같은 문장으로 다시 시간을 재보는 버전이에요. 그리디
+// 반복 버그를 막는 안전장치(no-repeat-ngram)는 그대로 유지해요 — 이건
+// 모델과 상관없이 계속 필요한 고침이에요.
 //
 // ⚠️ NLLB-200과 M2M100은 둘 다 내부적으로 같은 아키텍처(M2M100ForConditionalGeneration,
 // model_type: m2m_100)라서, EOS/디코더 시작 토큰 번호(둘 다 2번)를 포함한
@@ -81,10 +82,10 @@ data class ModelPaths(
 
 object ModelManager {
 
-    // 한 번 메모리 부족으로 M2M100-418M(약 603MB)로 내렸다가, 지금은 다시
-    // NLLB-200-distilled-600M(양자화 기준 약 864MB)로 올렸어요. (자세한
-    // 이유는 파일 맨 위 주석 참고)
-    private const val REPO = "Xenova/nllb-200-distilled-600M"
+    // 직전 버전(NLLB-200)의 태블릿 실측 속도가 생각보다 느려서, 같은
+    // 태블릿에서 직접 비교하려고 잠깐 M2M100-418M(약 603MB, 더 가벼운
+    // 모델)으로 되돌렸어요. (자세한 이유는 파일 맨 위 주석 참고)
+    private const val REPO = "Xenova/m2m100_418M"
     private const val API_URL = "https://huggingface.co/api/models/$REPO"
     private const val FILE_BASE_URL = "https://huggingface.co/$REPO/resolve/main/"
 
@@ -95,20 +96,21 @@ object ModelManager {
     // (이 값이 없으면: 디코더 선택 로직을 고쳐도, 이미 큰 파일을 받아버린
     // 태블릿에서는 새 코드가 적용 안 되고 계속 옛날의 큰 파일을 불러오려다
     // 메모리 부족으로 앱이 꺼지는 걸 반복하게 돼요.)
-    // 4로 올려서, 기기에 남아있는 옛날 M2M100 파일을 무시하고 NLLB-200을 새로 받게 해요.
-    private const val MODEL_SCHEMA_VERSION = 4
+    // 5로 올려서, 기기에 남아있는 NLLB-200 파일을 무시하고 M2M100을 새로 받게 해요.
+    private const val MODEL_SCHEMA_VERSION = 5
 
-    // NLLB-200 저장소의 tokenizer.json은 비교 테스트에서 문제가 없었던 걸로
-    // 확인해서, huggingface 원본 주소를 그대로 써요 (M2M100 때처럼 우리
-    // 저장소에 고쳐서 따로 올려둘 필요가 없어요).
-    private const val TOKENIZER_URL = "${FILE_BASE_URL}tokenizer.json"
+    // M2M100 저장소 원본 tokenizer.json에는 merge 규칙 1,053개가 vocab에 없는
+    // 결과를 만드는 버그가 있어서, 고친 버전을 우리 저장소에 따로 올려서 써요.
+    // (파일 맨 위 주석 참고)
+    private const val TOKENIZER_URL =
+        "https://github.com/yongnicer1028-sudo/nllb-translate-test/releases/download/tokenizer-fixed-m2m100/tokenizer.json"
 
     // 지금 기기에 받아져 있는 tokenizer.json이 "몇 번째 버전"인지 표시하는
     // 값이에요. 이 값을 바꾸면(모델을 바꾸거나, 토크나이저 파일 자체가
     // 나중에 또 바뀌면) 이미 받아둔 인코더/디코더(수백MB)는 그대로 두고
-    // 토크나이저 파일(수십MB)만 다시 받아요. M2M100 → NLLB-200으로 모델
-    // 자체를 바꿨으니 이번엔 2로 올려요.
-    private const val TOKENIZER_VERSION = 2
+    // 토크나이저 파일(수십MB)만 다시 받아요. NLLB-200 → M2M100으로 모델
+    // 자체를 다시 바꿨으니 이번엔 3으로 올려요.
+    private const val TOKENIZER_VERSION = 3
 
     private val client = OkHttpClient.Builder()
         .connectTimeout(30, TimeUnit.SECONDS)
@@ -618,7 +620,7 @@ class MainActivity : AppCompatActivity() {
         activityScope.launch {
             try {
                 val result = withContext(Dispatchers.Default) {
-                    engine.translate(text, "jpn_Jpan", "kor_Hang")
+                    engine.translate(text, "__ja__", "__ko__")
                 }
                 binding.textOutput.text = result.text
                 binding.textTiming.text = "걸린 시간: ${result.elapsedMs} ms"
