@@ -24,6 +24,16 @@ package com.yongyong.nllbtest
 // 하나만 먼저 넣으면 됐지만, M2M100은 config.json의 decoder_start_token_id
 // (문장끝 표시, EOS)를 먼저 넣고 그 다음에 목표 언어 코드를 넣어야 해요.
 // (NllbTranslator.translate 함수 참고)
+//
+// ⚠️ huggingface.co의 Xenova/m2m100_418M 저장소에 있는 tokenizer.json 파일
+// 자체에 버그가 있었어요: merge(합치기) 규칙 231,277개 중 1,053개(약 0.46%)가
+// "합친 결과가 단어 사전(vocab)에 아예 없는" 이상한 규칙이라서, 폰뿐 아니라
+// 컴퓨터에서 완전히 똑같은 라이브러리로 불러와도 무조건 "Token X out of
+// vocabulary" 오류로 실패했어요 (GitHub Actions로 직접 재현/확인함 — 폰
+// 문제가 아니라 그 파일 자체의 문제였어요). 그래서 그 1,053개를 제거해서
+// 고친 tokenizer.json을 우리 저장소의 GitHub Release에 따로 올려두고,
+// 토크나이저 파일만 그 주소에서 받아와요. (자세한 내용은 ModelManager의
+// FIXED_TOKENIZER_URL 주석 참고)
 // ─────────────────────────────────────────────────────────────────────────
 
 import ai.djl.huggingface.tokenizers.HuggingFaceTokenizer
@@ -79,6 +89,20 @@ object ModelManager {
     // 3으로 올려서, 기기에 남아있는 옛날 NLLB 파일을 무시하고 M2M100을 새로 받게 해요.
     private const val MODEL_SCHEMA_VERSION = 3
 
+    // ⚠️ huggingface의 tokenizer.json 자체에 버그가 있어서(merge 규칙
+    // 231,277개 중 1,053개가 vocab에 없는 결과를 만드는 이상한 규칙),
+    // 그 1,053개를 제거한 "고쳐진" 버전을 우리 저장소의 GitHub Release에
+    // 따로 올려두고, 토크나이저 파일만 huggingface 대신 여기서 받아요.
+    // (인코더/디코더 onnx 파일은 문제 없는 파일들이라 그대로 huggingface에서 받아요)
+    private const val FIXED_TOKENIZER_URL =
+        "https://github.com/yongnicer1028-sudo/nllb-translate-test/releases/download/tokenizer-fixed-m2m100/tokenizer.json"
+
+    // 고쳐진 tokenizer.json이 나중에 또 바뀌면(예: 문제를 더 찾아서 다시 올리면)
+    // 이 숫자를 1 올려주세요. 그러면 이미 (예전의 고장난) 토크나이저를 받아둔
+    // 기기도 인코더/디코더(630MB)는 그대로 두고 토크나이저 파일(약 5MB)만
+    // 다시 받아요 — 모델을 통째로 다시 받을 필요가 없어요.
+    private const val TOKENIZER_FIX_VERSION = 1
+
     private val client = OkHttpClient.Builder()
         .connectTimeout(30, TimeUnit.SECONDS)
         .readTimeout(120, TimeUnit.SECONDS)
@@ -91,7 +115,7 @@ object ModelManager {
     }
 
     /**
-     * 이미 파일 3개가 전부 다운로드되어 있는지 확인.
+     * 이미 파일 3개가 전부 정상적으로 다운로드되어 있는지 확인.
      * (1단계라 정확한 용량 검증까지는 안 하고, 파일 존재+용량>0 만 확인해요.
      *  나중에 문제가 생기면 이 부분에 체크섬 검증을 추가하면 좋아요.)
      */
@@ -102,7 +126,7 @@ object ModelManager {
             versionFile.readText().trim().toIntOrNull()
         } else null
         if (savedVersion != MODEL_SCHEMA_VERSION) {
-            // 옛날 로직으로 받아둔 파일일 수 있어요 (예: 메모리 부족을 일으키는            
+            // 옛날 로직으로 받아둔 파일일 수 있어요 (예: 메모리 부족을 일으키는
             // 큰 디코더). 안전하게 새로 받도록 "없음" 취급해요.
             return null
         }
@@ -110,9 +134,19 @@ object ModelManager {
         val enc = File(dir, "encoder.onnx")
         val dec = File(dir, "decoder.onnx")
         val tok = File(dir, "tokenizer.json")
-        return if (enc.length() > 0 && dec.length() > 0 && tok.length() > 0) {
-            ModelPaths(enc.absolutePath, dec.absolutePath, tok.absolutePath)
+        if (enc.length() <= 0 || dec.length() <= 0 || tok.length() <= 0) return null
+
+        // 인코더/디코더는 위에서 이미 확인했으니, 토크나이저 파일만 "고쳐진
+        // 버전"인지 따로 확인해요. 이 버전이 다르면 download()가 알아서
+        // 토크나이저 파일만 다시 받고, 이미 받아둔 인코더/디코더는 그대로
+        // 재사용해요 (630MB를 또 받을 필요가 없어요).
+        val tokVersionFile = File(dir, "tokenizer_fix_version.txt")
+        val savedTokVersion = if (tokVersionFile.exists()) {
+            tokVersionFile.readText().trim().toIntOrNull()
         } else null
+        if (savedTokVersion != TOKENIZER_FIX_VERSION) return null
+
+        return ModelPaths(enc.absolutePath, dec.absolutePath, tok.absolutePath)
     }
 
     /**
@@ -120,7 +154,7 @@ object ModelManager {
      * 이름이 정확히 뭔지 찾아내요. (버전에 따라 파일명이 다를 수 있어서,
      * 이름을 하드코딩하는 대신 "이런 패턴을 포함하는 파일"을 직접 찾아요)
      */
-    private fun resolveFileNames(): Triple<String, String, String> {
+    private fun resolveFileNames(): Pair<String, String> {
         val request = Request.Builder().url(API_URL).build()
         client.newCall(request).execute().use { response ->
             val body = response.body?.string() ?: throw IllegalStateException("모델 파일 목록을 못 가져왔어요.")
@@ -141,14 +175,14 @@ object ModelManager {
             // 디코더: 캐시 없이 통째로 계산하는 "decoder_model.onnx" 형태를 최우선으로 찾고,
             // 없으면 "decoder_model_merged"(캐시 지원 버전)로 대체 — 이 경우는 지금 버전 코드가
             // 아직 처리 못 하니 나중에 에러 메시지로 알려줘요.
-                        val plainDecoder = names
+            val plainDecoder = names
                 .filter {
                     it.startsWith("onnx/") && it.contains("decoder_model") &&
                         !it.contains("merged") && !it.contains("with_past") && it.endsWith(".onnx")
                 }
                 .sortedBy { name -> if (name.contains("quantized") || name.contains("int8")) 0 else 1 }
                 .firstOrNull()
-val mergedDecoder = names
+            val mergedDecoder = names
                 .filter { it.startsWith("onnx/") && it.contains("decoder_model_merged") && it.endsWith(".onnx") }
                 .sortedBy { name -> if (name.contains("quantized") || name.contains("int8")) 0 else 1 }
                 .firstOrNull()
@@ -156,75 +190,98 @@ val mergedDecoder = names
                 ?: throw IllegalStateException("디코더(.onnx) 파일을 저장소에서 못 찾았어요. 전체 목록: $names")
 
             Log.i(TAG, "선택된 파일 -> encoder: $encoderName, decoder: $decoderName")
-            return Triple(encoderName, decoderName, "tokenizer.json")
+            return Pair(encoderName, decoderName)
         }
     }
 
     /**
-     * 파일 3개를 순서대로 다운로드. [onProgress] 는 0~100 사이 값으로 전체 진행률을 알려줘요.
+     * 필요한 파일만 골라서 다운로드해요 — 이미 정상적으로 받아둔 파일은 다시
+     * 안 받아요. 예를 들어 토크나이저 파일만 고쳐졌을 땐 인코더/디코더
+     * (630MB)는 그대로 두고 토크나이저 파일(약 5MB)만 다시 받아요.
+     * [onProgress] 는 0~100 사이 값으로, 이번에 실제로 받는 파일들 기준
+     * 진행률을 알려줘요.
      */
     suspend fun download(context: android.content.Context, onProgress: (Int) -> Unit): ModelPaths {
-        val (encoderName, decoderName, tokenizerName) = resolveFileNames()
         val dir = modelsDir(context)
+        val encFile = File(dir, "encoder.onnx")
+        val decFile = File(dir, "decoder.onnx")
+        val tokFile = File(dir, "tokenizer.json")
 
-        val targets = listOf(
-            encoderName to File(dir, "encoder.onnx"),
-            decoderName to File(dir, "decoder.onnx"),
-            tokenizerName to File(dir, "tokenizer.json")
-        )
-
-        // 파일마다 크기가 크게 달라서(모델 수백MB vs 토크나이저 수십MB), 미리 각 파일 크기를 안 뒤
-        // 그냥 "몇 번째 파일"로 대충 진행률을 나누면 부정확해요. 그래서 실제 바이트 수 기준으로 계산해요.
-        val sizes = LongArray(targets.size)
-        for (i in targets.indices) {
-            sizes[i] = headContentLength(targets[i].first)
+        val schemaOk = File(dir, "schema_version.txt").let {
+            it.exists() && it.readText().trim().toIntOrNull() == MODEL_SCHEMA_VERSION
         }
-        val totalBytes = sizes.sum().coerceAtLeast(1L)
-        var doneBytesBase = 0L
-        // 진행률 콜백이 매 64KB마다 불려서 (큰 파일은 수천 번) UI 쪽에 너무 자주 업데이트를
-        // 요청하지 않도록, 정수 퍼센트 값이 실제로 바뀔 때만 onProgress를 호출해요.
-        var lastReportedPercent = -1
+        val encDecReady = schemaOk && encFile.length() > 0 && decFile.length() > 0
 
-        for (i in targets.indices) {
-            val (remoteName, localFile) = targets[i]
-            downloadOne(remoteName, localFile) { bytesSoFarThisFile ->
-                val overall = ((doneBytesBase + bytesSoFarThisFile).toDouble() / totalBytes * 100).toInt()
-                    .coerceIn(0, 100)
-                if (overall != lastReportedPercent) {
-                    lastReportedPercent = overall
-                    onProgress(overall)
-                }
+        val targets = mutableListOf<Pair<String, File>>()
+        if (!encDecReady) {
+            val (encoderName, decoderName) = resolveFileNames()
+            targets.add((FILE_BASE_URL + encoderName) to encFile)
+            targets.add((FILE_BASE_URL + decoderName) to decFile)
+        }
+
+        val tokVersionFile = File(dir, "tokenizer_fix_version.txt")
+        val tokReady = tokFile.length() > 0 &&
+            tokVersionFile.exists() &&
+            tokVersionFile.readText().trim().toIntOrNull() == TOKENIZER_FIX_VERSION
+        if (!tokReady) {
+            targets.add(FIXED_TOKENIZER_URL to tokFile)
+        }
+
+        // 파일마다 크기가 크게 달라서(모델 수백MB vs 토크나이저 몇MB), 미리 각 파일 크기를 안 뒤
+        // 그냥 "몇 번째 파일"로 대충 진행률을 나누면 부정확해요. 그래서 실제 바이트 수 기준으로 계산해요.
+        if (targets.isNotEmpty()) {
+            val sizes = LongArray(targets.size)
+            for (i in targets.indices) {
+                sizes[i] = headContentLength(targets[i].first)
             }
-            doneBytesBase += sizes[i]
+            val totalBytes = sizes.sum().coerceAtLeast(1L)
+            var doneBytesBase = 0L
+            // 진행률 콜백이 매 64KB마다 불려서 (큰 파일은 수천 번) UI 쪽에 너무 자주 업데이트를
+            // 요청하지 않도록, 정수 퍼센트 값이 실제로 바뀔 때만 onProgress를 호출해요.
+            var lastReportedPercent = -1
+
+            for (i in targets.indices) {
+                val (url, localFile) = targets[i]
+                downloadOne(url, localFile) { bytesSoFarThisFile ->
+                    val overall = ((doneBytesBase + bytesSoFarThisFile).toDouble() / totalBytes * 100).toInt()
+                        .coerceIn(0, 100)
+                    if (overall != lastReportedPercent) {
+                        lastReportedPercent = overall
+                        onProgress(overall)
+                    }
+                }
+                doneBytesBase += sizes[i]
+            }
         }
 
         onProgress(100)
-        // 새로 다 받았으니, 이번에 어떤 버전 로직으로 받았는지 기록해둡요.
+        // 새로 받은 파일들 기준으로, 이번에 어떤 버전 로직/토크나이저로 받았는지 기록해둡요.
         // (다음에 앱을 켰을 때 isDownloaded()가 이 값을 보고 재사용 여부를 판단해요)
         File(dir, "schema_version.txt").writeText(MODEL_SCHEMA_VERSION.toString())
+        tokVersionFile.writeText(TOKENIZER_FIX_VERSION.toString())
         return ModelPaths(
-            targets[0].second.absolutePath,
-            targets[1].second.absolutePath,
-            targets[2].second.absolutePath
+            encFile.absolutePath,
+            decFile.absolutePath,
+            tokFile.absolutePath
         )
     }
 
-    private fun headContentLength(remoteName: String): Long {
+    private fun headContentLength(url: String): Long {
         return try {
-            val request = Request.Builder().url(FILE_BASE_URL + remoteName).head().build()
+            val request = Request.Builder().url(url).head().build()
             client.newCall(request).execute().use { it.header("Content-Length")?.toLongOrNull() ?: 0L }
         } catch (e: Exception) {
             0L
         }
     }
 
-    private fun downloadOne(remoteName: String, dest: File, onBytes: (Long) -> Unit) {
-        val request = Request.Builder().url(FILE_BASE_URL + remoteName).build()
+    private fun downloadOne(url: String, dest: File, onBytes: (Long) -> Unit) {
+        val request = Request.Builder().url(url).build()
         client.newCall(request).execute().use { response ->
             if (!response.isSuccessful) {
-                throw IllegalStateException("다운로드 실패 ($remoteName): HTTP ${response.code}")
+                throw IllegalStateException("다운로드 실패 ($url): HTTP ${response.code}")
             }
-            val body = response.body ?: throw IllegalStateException("다운로드 실패 ($remoteName): 내용 없음")
+            val body = response.body ?: throw IllegalStateException("다운로드 실패 ($url): 내용 없음")
             body.byteStream().use { input ->
                 FileOutputStream(dest).use { output ->
                     val buffer = ByteArray(64 * 1024)
