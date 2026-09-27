@@ -7,6 +7,9 @@ on:
       - 'tokenizer-check/**'
       - '.github/workflows/tokenizer-check.yml'
 
+permissions:
+  contents: write
+
 jobs:
   check:
     runs-on: ubuntu-latest
@@ -25,39 +28,31 @@ jobs:
         with:
           gradle-version: '8.7'
 
-      - name: run tokenizer check
+      - name: run tokenizer check (scans merges and writes tokenizer.fixed.json if needed)
         run: gradle :tokenizer-check:run --no-daemon --stacktrace
 
-      - name: download tokenizer.json for inspection
-        run: curl -sL -o tokenizer.json https://huggingface.co/Xenova/m2m100_418M/resolve/main/tokenizer.json
-
-      - name: inspect tokenizer.json around the error
+      - name: 고쳐진 tokenizer.json이 만들어졌으면 릴리즈용 이름으로 복사하기
+        id: prep_fixed
         run: |
-          python3 -c "
-          import json
-          with open('tokenizer.json', encoding='utf-8') as f:
-              lines = f.readlines()
-          print('total lines:', len(lines))
-          for i in range(360449, 360459):
-              if 0 <= i < len(lines):
-                  print(i+1, repr(lines[i][:200]))
-          print()
-          with open('tokenizer.json', encoding='utf-8') as f:
-              data = json.load(f)
-          model = data.get('model', {})
-          print('model type:', model.get('type'))
-          merges = model.get('merges', [])
-          print('merges count:', len(merges))
-          print('first 3 merges:', merges[:3])
-          print('merges entry type:', type(merges[0]) if merges else None)
-          vocab = model.get('vocab', {})
-          print('vocab size:', len(vocab))
-          print('mars symbol in vocab:', '♂' in vocab)
-          added = data.get('added_tokens', [])
-          print('added_tokens count:', len(added))
-          mars_added = [t for t in added if '♂' in t.get('content','')]
-          print('mars in added_tokens:', mars_added)
-          mars_merges = [m for m in merges if '♂' in (m if isinstance(m, str) else ' '.join(m))]
-          print('mars merges count:', len(mars_merges))
-          print('sample mars merges:', mars_merges[:5])
-          "
+          if [ -f tokenizer-check/tokenizer.fixed.json ]; then
+            cp tokenizer-check/tokenizer.fixed.json tokenizer-check/tokenizer.json
+            echo "exists=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "exists=false" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: 고쳐진 tokenizer.json을 안정적인 GitHub Release 주소로 올리기
+        if: steps.prep_fixed.outputs.exists == 'true'
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: tokenizer-fixed-m2m100
+          name: 고쳐진 tokenizer.json (M2M100 번역용, merge 오류 수정판)
+          body: |
+            huggingface.co의 Xenova/m2m100_418M 저장소에 있는 tokenizer.json 파일
+            자체에 버그가 있어서 (merge 규칙 231,277개 중 1,053개가 vocab에 없는
+            결과를 만드는 이상한 규칙이라, 안드로이드에서도 컴퓨터에서도 무조건
+            "Token out of vocabulary" 오류로 실패함), 그 1,053개를 제거해서
+            정상적으로 불러와지게 고친 파일이에요.
+            앱은 이제 huggingface.co 대신 이 파일을 받아서 써요.
+          files: tokenizer-check/tokenizer.json
+          prerelease: true
