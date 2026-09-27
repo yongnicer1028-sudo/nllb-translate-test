@@ -1,0 +1,29 @@
+name: Translate Quality Check
+
+on:
+  workflow_dispatch: {}
+  push:
+    paths:
+      - 'translate-quality-check/**'
+      - '.github/workflows/translate-quality-check.yml'
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    steps:
+      - name: checkout
+        uses: actions/checkout@v4
+
+      - name: setup java
+        uses: actions/setup-java@v4
+        with:
+          distribution: 'temurin'
+          java-version: '17'
+
+      - name: setup gradle
+        uses: gradle/actions/setup-gradle@v4
+        with:
+          gradle-version: '8.7'
+
+      - name: 그리디 vs 빔서치 번역 비교 실행 (실제 인코더+디코더 모델 사용)
+        run: gradle :translate-quality-check:run --no-daemon --stacktrace
